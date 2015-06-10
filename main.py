@@ -9,28 +9,32 @@
 #
 #-----------------------------------------------------------------------#
 
-from findManifold import *
-import argparse
 
+import argparse
+import os
+import pickle
+from findManifold import *
 
 # argparse is a python module that makes creating command-line interfaces very very easy.
 # Try: python main.py --help
 def makeArgParser():
     parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
-    parser.add_argument("nWords", help="Number of words for analysis", type=int, default=9)
-    parser.add_argument("nNeighbors", help="Number of neighbors", type=int, default=1000)
-    parser.add_argument("nEigenvectors", help="Number of eigenvectors",
+    parser.add_argument("nWords", help="Number of words for analysis", type=int, default=1000)
+    parser.add_argument("nNeighbors", help="Number of neighbors", type=int, default=9)
+    parser.add_argument("--nEigenvectors", help="Number of eigenvectors",
                         type=int, default=11)
-    parser.add_argument("--bigrams", help="Bigrams file to use", type=str,
-            default="../../data/english/ngrams/english-brown_bigrams.txt")
-    parser.add_argument("--trigrams", help="Trigrams file to use", type=str,
-            default="../../data/english/ngrams/english-brown_trigrams.txt")
-    parser.add_argument("--words", help="Words file to use", type=str,
-            default="../../data/english/ngrams/english-brown_words.txt")
-    parser.add_argument("--output", help="Output folder to use", type=str,
-            default="../../data/english/neighbors")
-    parser.add_argument("--name", help="Corpus name", type=str, default="english-brown")
-    parser.add_argument("--languagename", help="Language name", type=str, default="english")
+    parser.add_argument("--datapath", help="Data folder of input ngram files and output neighbor files", type=str,
+            default="../../data/")
+#    parser.add_argument("--bigrams", help="Bigrams file to use", type=str,
+#            default="../../data/english/ngrams/english-brown_bigrams.txt")
+#    parser.add_argument("--trigrams", help="Trigrams file to use", type=str,
+#            default="../../data/english/ngrams/english-brown_trigrams.txt")
+#    parser.add_argument("--words", help="Words file to use", type=str,
+#            default="../../data/english/ngrams/english-brown_words.txt")
+#    parser.add_argument("--output", help="Output folder to use", type=str,
+#            default="../../data/english/neighbors")
+    parser.add_argument("--corpus", help="Corpus name (e.g. 'brown', 'google')", type=str, default="brown")
+    parser.add_argument("--lang", help="Language name", type=str, default="english")
     return parser
 
 def DEBUG(s):
@@ -43,41 +47,54 @@ def main(argv):
     NumberOfWordsForAnalysis = args.nWords
     NumberOfNeighbors = args.nNeighbors
     NumberOfEigenvectors = args.nEigenvectors
-    
-    infileBigramsname = args.bigrams
-    infileTrigramsname = args.trigrams
-    infileWordsname = args.words
-    wordfile = open(infileWordsname)
-    trigramfile = open(infileTrigramsname)
-    bigramfile = open(infileBigramsname)
 
-    mywords = GetMyWords(wordfile)
-    wordfile.close()
-    print("Word file is ", infileWordsname, '\t corpus has ', len(mywords), ' words')
+    language = args.lang
+    corpus = args.corpus
+
+    datafolder = args.datapath
+    inpath = datafolder + language + '/ngrams/'
+    outfolder = datafolder + language + '/neighbors/'
+
+    outcontextsfolder = datafolder + language + '/word_contexts/'
+
+    if not os.path.exists(outfolder):
+        os.makedirs(outfolder)
+
+    if not os.path.exists(outcontextsfolder):
+        os.makedirs(outcontextsfolder)
+
+    infileBigramsname = inpath + language + '-' + corpus + '_bigrams.txt'
+    infileTrigramsname = inpath + language + '-' + corpus + '_trigrams.txt'
+    infileWordsname = inpath + language + '-' + corpus + '_words.txt'
+
+    print('Reading word list...', flush=True)
+    mywords = GetMyWords(infileWordsname, corpus)
+    print("Word file is", infileWordsname, flush=True)
+    print('Corpus has', len(mywords), 'words', flush=True)
 
     if NumberOfWordsForAnalysis > len(mywords):
         NumberOfWordsForAnalysis = len(mywords)
-        print('number of words for analysis reduced to ', NumberOfWordsForAnalysis)
+        print('number of words for analysis reduced to', NumberOfWordsForAnalysis)
 
     analyzedwordlist = list(mywords.keys())[ : NumberOfWordsForAnalysis] 
 
-    outfilenameNeighbors = args.output + "/" + args.name + "_" + \
+    outfilenameNeighbors = outfolder + language + '-' + corpus + "_" + \
                            str(NumberOfWordsForAnalysis) + "_" + \
                            str(NumberOfNeighbors) + "_nearest_neighbors.txt"
-    outfilenameContexts     = args.output + "/" + args.name + "_contexts.txt"
-    outfilenameFromWordToContexts = args.output + "/" + args.name + "_" + \
-                                    str(NumberOfWordsForAnalysis) + \
-                                    "_from-word-to-contexts.txt"
 
-    outfileFromWordToContexts = open(outfilenameFromWordToContexts, 'w')
+    outWordToContexts_pkl_fname = outcontextsfolder + language + '-' + corpus + \
+                                  "_" + str(NumberOfWordsForAnalysis) + "_" + \
+                                  str(NumberOfNeighbors) + "_WordToContexts.pkl"
+
+    outContextToWords_pkl_fname = outcontextsfolder + language + '-' + corpus + \
+                                  "_" + str(NumberOfWordsForAnalysis) + "_" + \
+                                  str(NumberOfNeighbors) + "_ContextToWords.pkl"
+
     outfileNeighbors = open(outfilenameNeighbors, 'w')
-    outfileContexts = open(outfilenameContexts, 'w')
 
-    print("#  The number with each context is the number of distinct words found in that context.\n#", file=outfileContexts)
-
-    for outfile in [outfileNeighbors, outfileFromWordToContexts]:
-        print("# language: ", args.languagename,
-              "\n# corpus: ", args.name,
+    for outfile in [outfileNeighbors]:
+        print("# language: ", language,
+              "\n# corpus: ", corpus,
               "\n#Number of words analyzed ", NumberOfWordsForAnalysis,
               "\n#Number of neighbors identified ", NumberOfNeighbors,"\n",
               file=outfile)
@@ -93,11 +110,23 @@ def main(argv):
 #    context_array = GetContextArrayNew(wordContextDict, contextWordDict)
 
     DEBUG("Computing context array")
-    context_array = GetContextArray(NumberOfWordsForAnalysis,
-                                    mywords, bigramfile, trigramfile)
+    context_array, WordToContexts, ContextToWords = GetContextArray(corpus, 
+                                                       NumberOfWordsForAnalysis,
+                                                       analyzedwordlist,
+                                                       infileBigramsname,
+                                                       infileTrigramsname)
+
+    with open(outWordToContexts_pkl_fname, 'wb') as f:
+        pickle.dump(WordToContexts, f)
+    DEBUG('WordToContexts ready and pickled')
+
+    with open(outContextToWords_pkl_fname, 'wb') as f:
+        pickle.dump(ContextToWords, f)
+    DEBUG('ContextToWords ready and pickled')
 
     DEBUG("Computing shared contexts")
     CountOfSharedContexts = context_array.dot(context_array.T).todense()
+    del context_array
 
     DEBUG("Computing diameter")
     Diameter = Normalize(NumberOfWordsForAnalysis, CountOfSharedContexts)
@@ -107,14 +136,18 @@ def main(argv):
     
     DEBUG("Computing mylaplacian")
     mylaplacian = compute_laplacian(NumberOfWordsForAnalysis, Diameter, incidencegraph)
+    del Diameter
+    del incidencegraph
 
     DEBUG("Compute eigenvectors...")
     myeigenvalues, myeigenvectors = GetEigenvectors(mylaplacian)
-   
+    del mylaplacian
+    del myeigenvalues
 
     DEBUG('Coordinates computed. now computing distances between words...')
     coordinates = myeigenvectors[:,:NumberOfEigenvectors] # take first N columns of eigenvector matrix
     wordsdistance = compute_words_distance(NumberOfWordsForAnalysis, coordinates)
+    del coordinates
 
     DEBUG('Computing nearest neighbors now... ')
     closestNeighbors = compute_closest_neighbors(analyzedwordlist, wordsdistance, NumberOfNeighbors)

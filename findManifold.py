@@ -12,12 +12,12 @@
 import sys
 import math
 import collections
-import numpy as np
 import itertools
 import time
 
 #import multiprocessing as mp
 
+import numpy as np
 import scipy.spatial.distance as sd
 import scipy.sparse as sp
 import scipy.sparse.linalg as sl
@@ -28,14 +28,37 @@ def Normalize(NumberOfWordsForAnalysis, CountOfSharedContexts):
         arr[w] = np.sum(CountOfSharedContexts[w]) - CountOfSharedContexts[w, w]
     return arr
 
-def GetMyWords(wordfile):
-    mywords = collections.OrderedDict()
-    for line in wordfile:
-        pieces = line.split()
-        if pieces[0] == "#":
-            continue
-        mywords[pieces[0]] = int(pieces[1])         
-    return mywords
+def hasGooglePOSTag(line, corpus):
+    if corpus == 'google':
+        for tag in ['_NUM', '_ADP', '_ADJ', '_VERB', '_NOUN',
+                    '_PRON', '_ADV', '_CONJ', '_DET']:
+            if tag in line:
+                return True
+        else:
+            return False
+    else:
+        return False
+
+def GetMyWords(infileWordsname, corpus, minWordFreq=1):
+    mywords = dict()
+
+    with open(infileWordsname) as wordfile:
+        for line in wordfile:
+            line = line.replace('\n', '').replace('\r', '')
+            if (not line) or line.startswith('#') or hasGooglePOSTag(line, corpus):
+                continue
+            *subpieces, lastpiece = line.split()
+            if not subpieces:
+                continue
+
+            wordFreq = int(lastpiece)
+            if wordFreq < minWordFreq:
+                break
+
+            mywords[' '.join(subpieces)] = wordFreq
+
+    return collections.OrderedDict(sorted(mywords.items(),
+                                            key=lambda x:x[1], reverse=True))
 
 def GetWordContextDicts(wordlist, bigramfile, trigramfile):
     wordContextDict = collections.OrderedDict()
@@ -72,10 +95,11 @@ def GetWordContextDicts(wordlist, bigramfile, trigramfile):
 
 
 
-def GetContextArray(nwords, mywords, bigramfile, trigramfile):
+def GetContextArray(corpus, nwords, wordlist, infileBigramsname, infileTrigramsname):
 
-    wordlist = list(mywords.keys())[ : nwords]
-    
+    WordToContexts = dict()
+    ContextToWords = dict()
+
     class Namespace:
         pass
     ns = Namespace() # this is necessary so we can reference ncontexts from inner functions
@@ -99,27 +123,219 @@ def GetContextArray(nwords, mywords, bigramfile, trigramfile):
         cols.append(c)
         vals.append(1)
 
-    for line in trigramfile:
-        if line.startswith('#'):
-            continue
-        c = line.split()
-        if worddict.get(c[0]) is not None:
-            addword(c[0], "__" + c[1] + c[2])
-        if worddict.get(c[1]) is not None:
-            addword(c[1], c[0] + "__" + c[2])
-        if worddict.get(c[2]) is not None:
-            addword(c[2], c[0] + c[1] + "__")
+    with open(infileTrigramsname) as trigramfile:
+        for line in trigramfile:
+            line = line.replace('\n', '').replace('\r', '')
+            if (not line) or line.startswith('#') or hasGooglePOSTag(line, corpus):
+                continue
+            c = line.split()
 
-    for line in bigramfile:
-        if line.startswith('#'):
-            continue
-        c = line.split()
-        if worddict.get(c[0]) is not None:
-            addword(c[0], "__" + c[1])
-        if worddict.get(c[1]) is not None:
-            addword(c[1], c[0] + "__")
-    
-    return sp.csr_matrix((vals,(rows,cols)), shape=(nwords, ns.ncontexts) )
+            word1 = c[0]
+            word2 = c[1]
+            word3 = c[2]
+            _wordList = [word1, word2, word3]
+
+            context1 = tuple(['_', word2, word3])
+            context2 = tuple([word1, '_', word3])
+            context3 = tuple([word1, word2, '_'])
+            _contextList = [context1, context2, context3]
+
+            if worddict.get(word1) is not None:
+                addword(word1, "__" + word2 + word3)
+            if worddict.get(word2) is not None:
+                addword(word2, word1 + "__" + word3)
+            if worddict.get(word3) is not None:
+                addword(word3, word1 + word2 + "__")
+
+            for (word, context) in zip(_wordList, _contextList):
+                if word not in WordToContexts:
+                    WordToContexts[word] = collections.Counter()
+                WordToContexts[word].update([context])
+
+                if context not in ContextToWords:
+                    ContextToWords[context] = collections.Counter()
+                ContextToWords[context].update([word])
+
+    with open(infileBigramsname) as bigramfile:
+        for line in bigramfile:
+            line = line.replace('\n', '').replace('\r', '')
+            if (not line) or line.startswith('#') or hasGooglePOSTag(line, corpus):
+                continue
+            c = line.split()
+
+            word1 = c[0]
+            word2 = c[1]
+            _wordList = [word1, word2]
+
+            context1 = tuple(['_', word2])
+            context2 = tuple([word1, '_'])
+            _contextList = [context1, context2]
+
+            if worddict.get(c[0]) is not None:
+                addword(c[0], "__" + c[1])
+            if worddict.get(c[1]) is not None:
+                addword(c[1], c[0] + "__")
+
+            for (word, context) in zip(_wordList, _contextList):
+                if word not in WordToContexts:
+                    WordToContexts[word] = collections.Counter()
+                WordToContexts[word].update([context])
+
+                if context not in ContextToWords:
+                    ContextToWords[context] = collections.Counter()
+                ContextToWords[context].update([word])
+
+
+    return ( sp.csr_matrix((vals,(rows,cols)), shape=(nwords, ns.ncontexts) ),
+             WordToContexts, ContextToWords )
+
+
+def GetContextArray_Lxa(corpus, nwords, wordlist, infileContextwordsname,
+                        infileBigramsname, infileTrigramsname):
+
+    contextwordList = [line.split()[0]
+                       for line in open(infileContextwordsname).readlines()]
+
+    WordToContexts = dict()
+    ContextToWords = dict()
+
+    class Namespace:
+        pass
+    ns = Namespace() # this is necessary so we can reference ncontexts from inner functions
+    ns.ncontexts = 0
+    def contexts_incr():
+        tmp = ns.ncontexts
+        ns.ncontexts += 1
+        return tmp
+    contextdict = collections.defaultdict(contexts_incr)
+    worddict = {w: wordlist.index(w) for w in wordlist}
+
+    # entries for sparse matrix
+    rows = []
+    cols = []
+    vals = [] 
+
+    def addword(word, context):
+        w = worddict[word]
+        c = contextdict[context]
+        rows.append(w)
+        cols.append(c)
+        vals.append(1)
+
+    with open(infileTrigramsname) as trigramfile:
+        for line in trigramfile:
+            line = line.replace('\n', '').replace('\r', '')
+            if (not line) or line.startswith('#') or hasGooglePOSTag(line, corpus):
+                continue
+            c = line.split()
+
+            word1 = c[0]
+            word2 = c[1]
+            word3 = c[2]
+
+            # at least one of the three words has to be a target word
+            if (word1 in wordlist) or (word2 in wordlist) or (word3 in wordlist):
+                pass
+            else:
+                continue
+
+            # at least one of the three words has to be a context word
+            if (word1 in contextwordList) or (word2 in contextwordList) or \
+               (word3 in contextwordList):
+                pass
+            else:
+                continue
+
+            _targetwordList = list()
+            _contextwordList = list()
+
+            if word1 in wordlist:
+                _targetwordList.append((word1, 0))
+            if word2 in wordlist:
+                _targetwordList.append((word2, 1))
+            if word3 in wordlist:
+                _targetwordList.append((word3, 2))
+
+            if word1 in contextwordList:
+                _contextwordList.append((word1, 0))
+            if word2 in contextwordList:
+                _contextwordList.append((word2, 1))
+            if word3 in contextwordList:
+                _contextwordList.append((word3, 2))
+
+            for (targetword, idx_t) in _targetwordList:
+                for (contextword, idx_c) in _contextwordList:
+                    contextStrList = ['x', 'x', 'x']
+                    contextStrList[idx_c] = contextword
+                    contextStrList[idx_t] = '_'
+                    contextStrTuple = tuple(contextStrList)
+
+                    addword(targetword, contextStrTuple)
+
+                    if targetword not in WordToContexts:
+                        WordToContexts[targetword] = collections.Counter()
+                    WordToContexts[targetword].update([contextStrTuple])
+
+                    if contextStrTuple not in ContextToWords:
+                        ContextToWords[contextStrTuple] = collections.Counter()
+                    ContextToWords[contextStrTuple].update([targetword])
+
+    with open(infileBigramsname) as bigramfile:
+        for line in bigramfile:
+            line = line.replace('\n', '').replace('\r', '')
+            if (not line) or line.startswith('#') or hasGooglePOSTag(line, corpus):
+                continue
+            c = line.split()
+
+            word1 = c[0]
+            word2 = c[1]
+
+            # at least one of the two words has to be a target word
+            if (word1 in wordlist) or (word2 in wordlist):
+                pass
+            else:
+                continue
+
+            # at least one of the two words has to be a context word
+            if (word1 in contextwordList) or (word2 in contextwordList):
+                pass
+            else:
+                continue
+
+            _targetwordList = list()
+            _contextwordList = list()
+
+            if word1 in wordlist:
+                _targetwordList.append((word1, 0))
+            if word2 in wordlist:
+                _targetwordList.append((word2, 1))
+
+            if word1 in contextwordList:
+                _contextwordList.append((word1, 0))
+            if word2 in contextwordList:
+                _contextwordList.append((word2, 1))
+
+            for (targetword, idx_t) in _targetwordList:
+                for (contextword, idx_c) in _contextwordList:
+                    contextStrList = ['_', '_']
+                    contextStrList[idx_c] = contextword
+                    contextStrTuple = tuple(contextStrList)
+
+                    addword(targetword, contextStrTuple)
+
+                    if targetword not in WordToContexts:
+                        WordToContexts[targetword] = collections.Counter()
+                    WordToContexts[targetword].update([contextStrTuple])
+
+                    if contextStrTuple not in ContextToWords:
+                        ContextToWords[contextStrTuple] = collections.Counter()
+                    ContextToWords[contextStrTuple].update([targetword])
+
+
+    return ( sp.csr_matrix((vals,(rows,cols)), shape=(nwords, ns.ncontexts) ),
+             WordToContexts, ContextToWords )
+
+
 
 
 # TODO: need this function to keep track of (i.e., generate and create) wordContextDict, contextWordDict?
@@ -190,7 +406,7 @@ def GetContextArrayNew(wordlist, bigramfile, trigramfile):
 
     print('nContextsWithMostFreqWords ', nContextsWithMostFreqWords)
 
-    return (sp.csr_matrix((vals,(rows,cols)), shape=(nwords, ns.ncontexts) ),
+    return (sp.csr_matrix((vals,(rows,cols)), shape=(nwords, ns.ncontexts), dtype=np.int64 ),
             wordContextDict, contextWordDict)
 
 
